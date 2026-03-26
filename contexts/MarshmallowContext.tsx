@@ -11,6 +11,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useAuth } from "./AuthContext";
@@ -20,6 +21,7 @@ interface MarshmallowState {
   color: string;
   sizeCm: number;
   isBlocking: boolean;
+  blockStartTime: number | null;
   blockEndTime: number | null;
   totalBlockedMinutes: number;
   nameChangesUsed: number;
@@ -44,6 +46,7 @@ const defaultState: MarshmallowState = {
   color: "#FFB5C2",
   sizeCm: 1,
   isBlocking: false,
+  blockStartTime: null,
   blockEndTime: null,
   totalBlockedMinutes: 0,
   nameChangesUsed: 0,
@@ -67,6 +70,7 @@ export function MarshmallowProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   const [state, setState] = useState<MarshmallowState>(defaultState);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
 
   const loadFromDB = useCallback(async () => {
     if (!session?.user?.id) {
@@ -108,56 +112,72 @@ export function MarshmallowProvider({ children }: { children: ReactNode }) {
   };
 
   const startBlocking = (endTime: number, growthRate: number = 1.0) => {
-    setState((prev) => ({ ...prev, isBlocking: true, blockEndTime: endTime }));
+    const now = Date.now();
+    setState((prev) => ({ ...prev, isBlocking: true, blockStartTime: now, blockEndTime: endTime }));
 
     if (session?.user?.id) {
-      const durationMinutes = Math.round((endTime - Date.now()) / 60000);
+      const durationMinutes = Math.round((endTime - now) / 60000);
       createBlockingSession(session.user.id, durationMinutes)
-        .then((session) => setActiveSessionId(session.id))
+        .then((s) => {
+          setActiveSessionId(s.id);
+          activeSessionIdRef.current = s.id;
+        })
         .catch((err) => console.error("Failed to create blocking session:", err));
     }
   };
 
-  const completeBlocking = async (minutesBlocked: number, growthRate: number = 1.0) => {
+  const completeBlocking = useCallback(async (minutesBlocked: number, growthRate: number = 1.0) => {
     const growthCm = (minutesBlocked / 30) * growthRate;
-    const newSizeCm = Math.round((state.sizeCm + growthCm) * 10) / 10;
-    const newTotalMinutes = state.totalBlockedMinutes + minutesBlocked;
 
-    setState((prev) => ({
-      ...prev,
-      isBlocking: false,
-      blockEndTime: null,
-      sizeCm: newSizeCm,
-      totalBlockedMinutes: newTotalMinutes,
-    }));
+    // Use functional setState to read fresh values (avoids stale closure)
+    let newSizeCm = 0;
+    let newTotalMinutes = 0;
+    setState((prev) => {
+      newSizeCm = Math.round((prev.sizeCm + growthCm) * 10) / 10;
+      newTotalMinutes = prev.totalBlockedMinutes + minutesBlocked;
+      return {
+        ...prev,
+        isBlocking: false,
+        blockStartTime: null,
+        blockEndTime: null,
+        sizeCm: newSizeCm,
+        totalBlockedMinutes: newTotalMinutes,
+      };
+    });
 
-    if (session?.user?.id) {
+    const uid = session?.user?.id;
+    if (uid) {
       try {
-        await updateMarshmallow(session.user.id, {
+        await updateMarshmallow(uid, {
           size_cm: newSizeCm,
           total_blocked_minutes: newTotalMinutes,
         });
 
-        if (activeSessionId) {
-          await completeBlockingSession(activeSessionId, minutesBlocked, growthCm);
+        // Use ref to get the latest session ID (avoids stale closure)
+        const sessionId = activeSessionIdRef.current;
+        if (sessionId) {
+          await completeBlockingSession(sessionId, minutesBlocked, growthCm);
           setActiveSessionId(null);
+          activeSessionIdRef.current = null;
         }
 
         // Update streak on completed session
-        await updateStreak(session.user.id);
+        await updateStreak(uid);
       } catch (err) {
         console.error("Failed to sync completion:", err);
       }
     }
-  };
+  }, [session?.user?.id]);
 
   const cancelBlocking = () => {
     setState((prev) => ({
       ...prev,
       isBlocking: false,
+      blockStartTime: null,
       blockEndTime: null,
     }));
     setActiveSessionId(null);
+    activeSessionIdRef.current = null;
   };
 
   const changeName = async (name: string) => {

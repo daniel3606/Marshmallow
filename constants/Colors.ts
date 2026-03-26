@@ -19,8 +19,8 @@ const Colors = {
     warning: '#FF9500',
     info: '#5856D6',
 
-    card: '#FFFFFF',
-    cardBorder: '#F0E0D4',
+    card: '#FFF5EA',
+    cardBorder: '#CCC2B7',
 
     white: '#FFFFFF',
 } as const;

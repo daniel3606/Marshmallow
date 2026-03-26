@@ -24,9 +24,12 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import ScreenTimeModule from "screen-time-module";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const FREE_LIMIT = 3;
+
+type FocusMode = "flexible" | "deep";
 
 interface ScheduledBlock {
   id: string;
@@ -54,6 +57,9 @@ export default function ScheduledScreen() {
   const [newStartMin, setNewStartMin] = useState("00");
   const [newEndHour, setNewEndHour] = useState("17");
   const [newEndMin, setNewEndMin] = useState("00");
+  const [newMode, setNewMode] = useState<FocusMode>("flexible");
+  const [appsSelected, setAppsSelected] = useState(false);
+  const [appCount, setAppCount] = useState(0);
   const [creating, setCreating] = useState(false);
 
   const loadBlocks = useCallback(async () => {
@@ -90,6 +96,9 @@ export default function ScheduledScreen() {
     setNewStartMin("00");
     setNewEndHour("17");
     setNewEndMin("00");
+    setNewMode("flexible");
+    setAppsSelected(false);
+    setAppCount(0);
     setShowCreateModal(true);
   };
 
@@ -107,6 +116,7 @@ export default function ScheduledScreen() {
         days_of_week: newDays,
         start_time: `${newStartHour}:${newStartMin}:00`,
         end_time: `${newEndHour}:${newEndMin}:00`,
+        is_strong_block: newMode === "deep",
       });
       setShowCreateModal(false);
       await loadBlocks();
@@ -147,6 +157,50 @@ export default function ScheduledScreen() {
       },
     ]);
   };
+
+  const handleSelectMode = (selected: FocusMode) => {
+    if (selected === "deep" && !isPremium) {
+      Alert.alert(
+        "Premium Feature",
+        "Deep Focus is available with Marshmallow Premium. Upgrade to unlock unbreakable focus sessions.",
+        [
+          { text: "Not Now", style: "cancel" },
+          { text: "See Premium", onPress: () => router.push("/premium") },
+        ]
+      );
+      return;
+    }
+    setNewMode(selected);
+  };
+
+  const handlePickApps = async () => {
+    if (!ScreenTimeModule) {
+      Alert.alert("iOS Only", "App picker requires a physical iOS 16+ device.");
+      return;
+    }
+
+    const status = ScreenTimeModule.getAuthorizationStatus();
+    if (status !== "approved") {
+      try {
+        await ScreenTimeModule.requestAuthorization();
+      } catch {
+        Alert.alert("Authorization Required", "Please authorize Screen Time access first.");
+        return;
+      }
+    }
+
+    try {
+      const result = await ScreenTimeModule.openAppPicker();
+      if (result && result.length > 0) {
+        setAppsSelected(true);
+        setAppCount(result.length);
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "Could not open app picker.");
+    }
+  };
+
+  const isSimulator = Platform.OS !== "ios" || !ScreenTimeModule;
 
   const toggleDay = (day: number) => {
     setNewDays((prev) =>
@@ -231,6 +285,21 @@ export default function ScheduledScreen() {
                   <Text style={styles.blockTime}>
                     {formatTime(block.start_time)} - {formatTime(block.end_time)}
                   </Text>
+                  <View
+                    style={[
+                      styles.modeBadge,
+                      block.is_strong_block && styles.modeBadgeDeep,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.modeBadgeText,
+                        block.is_strong_block && styles.modeBadgeTextDeep,
+                      ]}
+                    >
+                      {block.is_strong_block ? "Deep Focus" : "Flexible"}
+                    </Text>
+                  </View>
                 </View>
                 <Switch
                   value={block.is_active}
@@ -321,6 +390,102 @@ export default function ScheduledScreen() {
                 </Pressable>
               ))}
             </View>
+
+            <Text style={styles.fieldLabel}>Focus Mode</Text>
+            <View style={styles.modeRow}>
+              <Pressable
+                style={[
+                  styles.modeCard,
+                  newMode === "flexible" && styles.modeCardSelected,
+                ]}
+                onPress={() => handleSelectMode("flexible")}
+              >
+                <View style={styles.modeHeader}>
+                  <View
+                    style={[
+                      styles.modeCheckbox,
+                      newMode === "flexible" && styles.modeCheckboxSelected,
+                    ]}
+                  >
+                    {newMode === "flexible" && (
+                      <Ionicons name="checkmark" size={14} color={Theme.colors.white} />
+                    )}
+                  </View>
+                  <Text
+                    style={[
+                      styles.modeTitle,
+                      newMode === "flexible" && styles.modeTitleSelected,
+                    ]}
+                  >
+                    Flexible
+                  </Text>
+                </View>
+                <Text style={styles.modeDetail}>3 x 15 min breaks</Text>
+                <Text style={styles.modeDetail}>Cancel anytime</Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.modeCard,
+                  newMode === "deep" && styles.modeCardSelected,
+                  !isPremium && styles.modeCardLocked,
+                ]}
+                onPress={() => handleSelectMode("deep")}
+              >
+                <View style={styles.modeHeader}>
+                  <View
+                    style={[
+                      styles.modeCheckbox,
+                      newMode === "deep" && styles.modeCheckboxSelected,
+                    ]}
+                  >
+                    {newMode === "deep" && (
+                      <Ionicons name="checkmark" size={14} color={Theme.colors.white} />
+                    )}
+                  </View>
+                  <Text
+                    style={[
+                      styles.modeTitle,
+                      newMode === "deep" && styles.modeTitleSelected,
+                    ]}
+                  >
+                    Deep Focus
+                  </Text>
+                  {!isPremium && (
+                    <View style={styles.proBadge}>
+                      <Text style={styles.proBadgeText}>PRO</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.modeDetail}>No breaks</Text>
+                <Text style={styles.modeDetail}>Can't cancel</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.fieldLabel}>Apps to Block</Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.appPickerButton,
+                pressed && styles.pressed,
+              ]}
+              onPress={handlePickApps}
+            >
+              <View style={styles.appPickerLeft}>
+                <Ionicons name="apps-outline" size={20} color={Theme.colors.secondary} />
+                <Text style={styles.appPickerText}>
+                  {appsSelected
+                    ? `${appCount} app${appCount !== 1 ? "s" : ""} selected`
+                    : "Choose apps to block"}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Theme.colors.gray} />
+            </Pressable>
+
+            {isSimulator && (
+              <Text style={styles.simNote}>
+                App selection requires a physical iOS 16+ device.
+              </Text>
+            )}
 
             <View style={styles.timeRow}>
               <View style={styles.timeField}>
@@ -566,6 +731,26 @@ const styles = StyleSheet.create({
   dayTextActive: {
     color: Theme.colors.secondary,
   },
+  modeBadge: {
+    alignSelf: "flex-start",
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: "rgba(139, 99, 92, 0.08)",
+  },
+  modeBadgeDeep: {
+    backgroundColor: "rgba(139, 99, 92, 0.15)",
+  },
+  modeBadgeText: {
+    fontSize: 11,
+    fontFamily: Theme.fonts.medium,
+    color: Theme.colors.gray,
+  },
+  modeBadgeTextDeep: {
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.secondary,
+  },
   deleteButton: {
     position: "absolute",
     top: 12,
@@ -693,6 +878,103 @@ const styles = StyleSheet.create({
     color: Theme.colors.gray,
     fontFamily: Theme.fonts.medium,
     fontSize: 16,
+  },
+  // Focus Mode (create modal)
+  modeRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 16,
+  },
+  modeCard: {
+    flex: 1,
+    backgroundColor: Theme.colors.background,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: Theme.colors.cardBorder,
+    padding: 12,
+  },
+  modeCardSelected: {
+    borderColor: Theme.colors.secondary,
+  },
+  modeCardLocked: {
+    opacity: 0.7,
+  },
+  modeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
+  modeCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: Theme.colors.cardBorder,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modeCheckboxSelected: {
+    backgroundColor: Theme.colors.secondary,
+    borderColor: Theme.colors.secondary,
+  },
+  modeTitle: {
+    fontSize: 13,
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.text,
+    flex: 1,
+  },
+  modeTitleSelected: {
+    color: Theme.colors.secondary,
+  },
+  proBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+    backgroundColor: "rgba(139, 99, 92, 0.12)",
+  },
+  proBadgeText: {
+    fontSize: 9,
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.secondary,
+    letterSpacing: 0.5,
+  },
+  modeDetail: {
+    fontSize: 11,
+    fontFamily: Theme.fonts.regular,
+    color: Theme.colors.gray,
+    marginTop: 1,
+  },
+  // App Picker (create modal)
+  appPickerButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Theme.colors.background,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Theme.colors.cardBorder,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  appPickerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  appPickerText: {
+    fontSize: 15,
+    fontFamily: Theme.fonts.medium,
+    color: Theme.colors.secondary,
+  },
+  simNote: {
+    fontSize: 11,
+    fontFamily: Theme.fonts.regular,
+    color: Theme.colors.gray,
+    textAlign: "center",
+    marginTop: 2,
+    marginBottom: 8,
   },
   disabled: {
     opacity: 0.5,

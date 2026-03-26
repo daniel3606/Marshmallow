@@ -15,7 +15,7 @@ export default function MarshmallowCharacter({
   sizeCm,
   isBlocking,
 }: MarshmallowCharacterProps) {
-  const scale = 0.8 + Math.min(sizeCm / 60, 0.4);
+  const scale = 0.9 + Math.min(sizeCm / 60, 0.4);
 
   return (
     <View style={styles.container}>
@@ -49,12 +49,6 @@ export default function MarshmallowCharacter({
             </View>
           </View>
 
-          {/* Shield badge when blocking */}
-          {isBlocking && (
-            <View style={styles.shieldBadge}>
-              <Text style={styles.shieldEmoji}>🛡️</Text>
-            </View>
-          )}
         </View>
       </View>
 

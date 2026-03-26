@@ -148,7 +148,8 @@ export default function LoginScreen() {
           return;
         }
         closeAuthSheet();
-        setStep("setup");
+        // Existing users go straight to tabs (no setup re-run)
+        router.replace("/");
       } else {
         const { error, needsEmailConfirmation } = await signUp(
           trimmedEmail,

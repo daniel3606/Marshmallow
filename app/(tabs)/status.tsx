@@ -5,7 +5,7 @@ import {
   PREMIUM_PRICE,
   useSubscription,
 } from "@/contexts/SubscriptionContext";
-import { fetchStreak } from "@/lib/database";
+import { fetchStreak, getMyFriendCode } from "@/lib/database";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
@@ -28,6 +28,7 @@ export default function StatusScreen() {
   const { isPremium, status: subStatus, expiresAt, features } = useSubscription();
   const [authStatus, setAuthStatus] = useState("checking");
   const [streak, setStreak] = useState({ current: 0, longest: 0 });
+  const [friendCode, setFriendCode] = useState<string | null>(null);
 
   const isAvailable = Platform.OS === "ios" && ScreenTimeModule;
 
@@ -44,6 +45,9 @@ export default function StatusScreen() {
             longest: data.longest_streak,
           });
         })
+        .catch(() => {});
+      getMyFriendCode(session.user.id)
+        .then(setFriendCode)
         .catch(() => {});
     }
   }, [session?.user?.id]);
@@ -260,6 +264,14 @@ export default function StatusScreen() {
             <Text style={styles.rowLabel}>Email</Text>
             <Text style={styles.rowValue} numberOfLines={1}>
               {session?.user?.email ?? "—"}
+            </Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Friend Code</Text>
+            <Text style={styles.rowValue}>
+              {friendCode
+                ? `${friendCode.slice(0, 4)}-${friendCode.slice(4)}`
+                : "—"}
             </Text>
           </View>
           <Pressable

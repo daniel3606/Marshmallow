@@ -159,7 +159,7 @@ export async function fetchStreak(userId: string) {
     .from("streaks")
     .select("*")
     .eq("user_id", userId)
-    .single();
+    .maybeSingle();
   if (error) throw error;
   return data;
 }
@@ -167,6 +167,23 @@ export async function fetchStreak(userId: string) {
 export async function updateStreak(userId: string) {
   const streak = await fetchStreak(userId);
   const today = new Date().toISOString().split("T")[0];
+
+  // No streak row yet — create one
+  if (!streak) {
+    const { data, error } = await supabase
+      .from("streaks")
+      .insert({
+        user_id: userId,
+        current_streak: 1,
+        longest_streak: 1,
+        last_active_date: today,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
   const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
 
   let newStreak = streak.current_streak;
@@ -286,6 +303,54 @@ export async function updateUserSettings(
     .single();
   if (error) throw error;
   return data;
+}
+
+// ============================================
+// FRIENDS
+// ============================================
+
+export interface FriendData {
+  user_id: string;
+  display_name: string | null;
+  marshmallow_name: string | null;
+  marshmallow_color: string | null;
+  size_cm: number | null;
+  total_blocked_minutes: number | null;
+  current_streak: number;
+  longest_streak: number;
+  friends_since: string;
+}
+
+export async function getFriendsWithData(): Promise<FriendData[]> {
+  const { data, error } = await supabase.rpc("get_friends_with_data");
+  if (error) throw error;
+  return (data as FriendData[]) ?? [];
+}
+
+export async function addFriendByCode(code: string) {
+  const { data, error } = await supabase.rpc("add_friend_by_code", {
+    code: code.toUpperCase().trim(),
+  });
+  if (error) throw error;
+  return data as { success: boolean; error?: string; friend_id?: string };
+}
+
+export async function removeFriend(friendUserId: string) {
+  const { data, error } = await supabase.rpc("remove_friend", {
+    target_friend_id: friendUserId,
+  });
+  if (error) throw error;
+  return data as { success: boolean; error?: string };
+}
+
+export async function getMyFriendCode(userId: string) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("friend_code")
+    .eq("id", userId)
+    .single();
+  if (error) throw error;
+  return data.friend_code as string;
 }
 
 // ============================================

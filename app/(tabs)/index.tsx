@@ -37,6 +37,12 @@ export default function HomeScreen() {
   const cosmeticSheetRef = useRef<BottomSheetModal>(null);
   const snapPoints = useMemo(() => ["55%"], []);
 
+  // Refs to avoid stale closures in the timer interval
+  const completeBlockingRef = useRef(completeBlocking);
+  completeBlockingRef.current = completeBlocking;
+  const growthRateRef = useRef(features.growth_rate);
+  growthRateRef.current = features.growth_rate;
+
   // Load streak
   useEffect(() => {
     if (session?.user?.id) {
@@ -48,19 +54,23 @@ export default function HomeScreen() {
 
   // Countdown timer when blocking is active
   useEffect(() => {
-    if (!state.isBlocking || !state.blockEndTime) return;
+    if (!state.isBlocking || !state.blockEndTime || !state.blockStartTime) return;
+
+    const { blockStartTime, blockEndTime } = state;
 
     const tick = () => {
-      const remaining = state.blockEndTime! - Date.now();
+      const remaining = blockEndTime - Date.now();
       if (remaining <= 0) {
+        // Compute actual session duration from stored start/end times
         const minutesBlocked = Math.max(
           1,
-          Math.round((Date.now() - (state.blockEndTime! - timeRemaining)) / 60000)
+          Math.round((blockEndTime - blockStartTime) / 60000)
         );
         if (ScreenTimeModule) {
           ScreenTimeModule.clearBlocking().catch(() => {});
         }
-        completeBlocking(minutesBlocked, features.growth_rate);
+        // Use refs to call the latest function with the latest growth rate
+        completeBlockingRef.current(minutesBlocked, growthRateRef.current);
         setTimeRemaining(0);
       } else {
         setTimeRemaining(remaining);
@@ -70,7 +80,17 @@ export default function HomeScreen() {
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [state.isBlocking, state.blockEndTime]);
+  }, [state.isBlocking, state.blockEndTime, state.blockStartTime]);
+
+  // Estimated growth during active session
+  const estimatedGrowth =
+    state.isBlocking && state.blockStartTime && state.blockEndTime
+      ? Math.round(
+          (((state.blockEndTime - state.blockStartTime) / 60000 / 30) *
+            features.growth_rate) *
+            10
+        ) / 10
+      : 0;
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
@@ -158,7 +178,12 @@ export default function HomeScreen() {
 
       {/* Size Display (above marshmallow, pushed down a bit) */}
       <View style={styles.sizeSection}>
-        <Text style={styles.sizeValue}>{state.sizeCm} cm</Text>
+        <Text style={styles.sizeValue}>
+          {state.sizeCm} cm
+          {state.isBlocking && estimatedGrowth > 0 && (
+            <Text style={styles.growthPreview}>{" "}(+{estimatedGrowth} cm)</Text>
+          )}
+        </Text>
         <Text style={styles.sizeDesc}>{getSizeDescription(state.sizeCm)}</Text>
         {features.growth_rate > 1 && (
           <View style={styles.boostBadge}>
@@ -345,13 +370,18 @@ const styles = StyleSheet.create({
   // Size (above marshmallow)
   sizeSection: {
     alignItems: "center",
-    marginTop: 12,
+    marginTop: 24,
     marginBottom: 0,
   },
   sizeValue: {
     fontSize: 36,
     fontFamily: Theme.fonts.bold,
     color: Theme.colors.text,
+  },
+  growthPreview: {
+    fontSize: 20,
+    fontFamily: Theme.fonts.semibold,
+    color: Theme.colors.success,
   },
   sizeDesc: {
     fontSize: 15,
