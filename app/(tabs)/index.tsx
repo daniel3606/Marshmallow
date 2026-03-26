@@ -1,370 +1,538 @@
-import React, { useState, useEffect, useCallback } from "react";
+import MarshmallowCharacter from "@/components/MarshmallowCharacter";
+import { MARSHMALLOW_COLORS } from "@/constants/marshmallow";
+import { formatTimeRemaining, getSizeDescription } from "@/constants/marshmallow";
+import Theme from "@/constants/theme";
+import { useAuth } from "@/contexts/AuthContext";
+import { useMarshmallow } from "@/contexts/MarshmallowContext";
+import { useSubscription } from "@/contexts/SubscriptionContext";
+import { fetchStreak } from "@/lib/database";
+import { Ionicons } from "@expo/vector-icons";
 import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetScrollView,
+  type BottomSheetBackdropProps,
+} from "@gorhom/bottom-sheet";
+import { router } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
-  TouchableOpacity,
-  FlatList,
-  Switch,
-  Alert,
-  ActivityIndicator,
-  Platform,
 } from "react-native";
-import ScreenTimeModule, { type SelectedItem } from "screen-time-module";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import ScreenTimeModule from "screen-time-module";
 
-type CheckableItem = SelectedItem & { checked: boolean };
+export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
+  const { session } = useAuth();
+  const { state, completeBlocking, cancelBlocking, changeColor } = useMarshmallow();
+  const { features, isPremium } = useSubscription();
+  const [timeRemaining, setTimeRemaining] = useState(0);
+  const [streak, setStreak] = useState(0);
 
-export default function AppBlockingScreen() {
-  const [authStatus, setAuthStatus] = useState("checking…");
-  const [items, setItems] = useState<CheckableItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [blockingActive, setBlockingActive] = useState(false);
+  const cosmeticSheetRef = useRef<BottomSheetModal>(null);
+  const snapPoints = useMemo(() => ["55%"], []);
 
-  // On mount, read persisted state from the native module
+  // Load streak
   useEffect(() => {
-    if (!ScreenTimeModule) return;
-    refreshStatus();
-  }, []);
+    if (session?.user?.id) {
+      fetchStreak(session.user.id)
+        .then((data) => setStreak(data.current_streak))
+        .catch(() => {});
+    }
+  }, [session?.user?.id]);
 
-  const refreshStatus = useCallback(async () => {
-    if (!ScreenTimeModule) return;
-    try {
-      const status = ScreenTimeModule.getAuthorizationStatus();
-      setAuthStatus(status);
-      if (status === "approved") {
-        const saved = await ScreenTimeModule.getSelectedItems();
-        if (saved && saved.length > 0) {
-          setItems(saved.map((it: SelectedItem) => ({ ...it, checked: true })));
+  // Countdown timer when blocking is active
+  useEffect(() => {
+    if (!state.isBlocking || !state.blockEndTime) return;
+
+    const tick = () => {
+      const remaining = state.blockEndTime! - Date.now();
+      if (remaining <= 0) {
+        const minutesBlocked = Math.max(
+          1,
+          Math.round((Date.now() - (state.blockEndTime! - timeRemaining)) / 60000)
+        );
+        if (ScreenTimeModule) {
+          ScreenTimeModule.clearBlocking().catch(() => {});
         }
+        completeBlocking(minutesBlocked, features.growth_rate);
+        setTimeRemaining(0);
+      } else {
+        setTimeRemaining(remaining);
       }
-    } catch {
-      setAuthStatus("error");
-    }
-  }, []);
+    };
 
-  // ---- Actions ----
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [state.isBlocking, state.blockEndTime]);
 
-  const handleAuthorize = async () => {
-    if (!ScreenTimeModule) return;
-    setLoading(true);
-    try {
-      await ScreenTimeModule.requestAuthorization();
-      await refreshStatus();
-    } catch (err: any) {
-      Alert.alert("Authorization Failed", err?.message ?? "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePickApps = async () => {
-    if (!ScreenTimeModule) return;
-    setLoading(true);
-    try {
-      const result = await ScreenTimeModule.openAppPicker();
-      if (result !== null) {
-        setItems(result.map((it: SelectedItem) => ({ ...it, checked: true })));
-      }
-    } catch (err: any) {
-      Alert.alert("Picker Error", err?.message ?? "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const toggleItem = (id: string) => {
-    setItems((prev) =>
-      prev.map((it) => (it.id === id ? { ...it, checked: !it.checked } : it))
-    );
-  };
-
-  const handleApplyBlocking = async () => {
-    if (!ScreenTimeModule) return;
-    const checkedIds = items.filter((i) => i.checked).map((i) => i.id);
-    if (checkedIds.length === 0) {
-      Alert.alert("Nothing Selected", "Toggle on at least one item to block.");
-      return;
-    }
-    setLoading(true);
-    try {
-      await ScreenTimeModule.applyBlocking(checkedIds);
-      setBlockingActive(true);
-      Alert.alert(
-        "Blocking Applied",
-        `${checkedIds.length} item(s) are now shielded.\nTry opening a blocked app — you should see Apple's shield overlay.`
-      );
-    } catch (err: any) {
-      Alert.alert("Blocking Error", err?.message ?? "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleClearBlocking = async () => {
-    if (!ScreenTimeModule) return;
-    setLoading(true);
-    try {
-      await ScreenTimeModule.clearBlocking();
-      setBlockingActive(false);
-      // Reflect the cleared shielding state in the UI checklist.
-      setItems((prev) => prev.map((it) => ({ ...it, checked: false })));
-      Alert.alert("Blocking Cleared", "All shields have been removed.");
-    } catch (err: any) {
-      Alert.alert("Error", err?.message ?? "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ---- Non-iOS fallback ----
-
-  if (Platform.OS !== "ios" || !ScreenTimeModule) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.title}>iOS Only</Text>
-        <Text style={styles.subtitle}>
-          Screen Time APIs are only available on a real iOS 16+ device.
-        </Text>
-      </View>
-    );
-  }
-
-  // ---- Render helpers ----
-
-  const checkedCount = items.filter((i) => i.checked).length;
-  const typeEmoji = (t: string) =>
-    t === "application" ? "📱" : t === "category" ? "📂" : "🌐";
-
-  const renderRow = ({ item }: { item: CheckableItem }) => (
-    <View style={styles.row}>
-      <Text style={styles.typeIcon}>{typeEmoji(item.type)}</Text>
-      <View style={styles.rowBody}>
-        <Text style={styles.rowLabel}>{item.label}</Text>
-        <Text style={styles.rowType}>{item.type}</Text>
-      </View>
-      <Switch
-        value={item.checked}
-        onValueChange={() => toggleItem(item.id)}
-        trackColor={{ false: "#D1D1D6", true: "#34C759" }}
+  const renderBackdrop = useCallback(
+    (props: BottomSheetBackdropProps) => (
+      <BottomSheetBackdrop
+        {...props}
+        disappearsOnIndex={-1}
+        appearsOnIndex={0}
+        opacity={0.4}
+        pressBehavior="close"
       />
-    </View>
+    ),
+    []
   );
 
-  // ---- Main UI ----
+  const handleStartBlocking = () => {
+    if (Platform.OS !== "ios" || !ScreenTimeModule) {
+      Alert.alert(
+        "iOS Only",
+        "Screen Time blocking requires a physical iOS 16+ device."
+      );
+      return;
+    }
+    router.push("/modal");
+  };
+
+  const handleStopBlocking = () => {
+    Alert.alert(
+      "End Session Early?",
+      "Your marshmallow won't grow as much if you stop early.",
+      [
+        { text: "Keep Going", style: "cancel" },
+        {
+          text: "End Session",
+          style: "destructive",
+          onPress: async () => {
+            if (ScreenTimeModule) {
+              await ScreenTimeModule.clearBlocking().catch(() => {});
+            }
+            cancelBlocking();
+            setTimeRemaining(0);
+          },
+        },
+      ]
+    );
+  };
+
+  const handleOpenCosmetics = () => {
+    cosmeticSheetRef.current?.present();
+  };
+
+  const handleSelectColor = async (hex: string) => {
+    if (!isPremium && state.colorChangesUsed >= 3) {
+      Alert.alert(
+        "Limit Reached",
+        "Free users can change color up to 3 times. Upgrade to Premium for unlimited changes.",
+        [
+          { text: "Not Now", style: "cancel" },
+          { text: "See Premium", onPress: () => router.push("/premium") },
+        ]
+      );
+      return;
+    }
+    try {
+      await changeColor(hex);
+    } catch {
+      Alert.alert("Error", "Failed to change color.");
+    }
+  };
 
   return (
-    <View style={styles.container}>
-      {/* Status row */}
-      <View style={styles.statusRow}>
-        <Text style={styles.statusLabel}>Auth:</Text>
-        <View
-          style={[
-            styles.badge,
-            authStatus === "approved"
-              ? styles.badgeGreen
-              : authStatus === "denied"
-                ? styles.badgeRed
-                : styles.badgeOrange,
-          ]}
-        >
-          <Text style={styles.badgeText}>{authStatus}</Text>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      {/* Top Bar: Streak (left) + Profile (right) */}
+      <View style={styles.topBar}>
+        <View style={styles.streakBadge}>
+          <Ionicons name="flame" size={18} color="#FF9500" />
+          <Text style={styles.streakText}>{streak}</Text>
         </View>
-        {blockingActive && (
-          <View style={[styles.badge, styles.badgePurple]}>
-            <Text style={styles.badgeText}>BLOCKING</Text>
+        <Pressable
+          style={({ pressed }) => [styles.profileButton, pressed && styles.pressed]}
+          onPress={() => router.push("/(tabs)/status")}
+        >
+          <Ionicons name="person-circle-outline" size={30} color={Theme.colors.secondary} />
+        </Pressable>
+      </View>
+
+      {/* Size Display (above marshmallow, pushed down a bit) */}
+      <View style={styles.sizeSection}>
+        <Text style={styles.sizeValue}>{state.sizeCm} cm</Text>
+        <Text style={styles.sizeDesc}>{getSizeDescription(state.sizeCm)}</Text>
+        {features.growth_rate > 1 && (
+          <View style={styles.boostBadge}>
+            <Text style={styles.boostText}>{features.growth_rate}x Growth</Text>
           </View>
         )}
       </View>
 
-      {/* Authorize */}
-      {authStatus !== "approved" && (
-        <TouchableOpacity
-          style={[styles.btn, styles.btnBlue]}
-          onPress={handleAuthorize}
-          disabled={loading}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.btnLabel}>Authorize Screen Time</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Pick apps */}
-      {authStatus === "approved" && (
-        <TouchableOpacity
-          style={[styles.btn, styles.btnIndigo]}
-          onPress={handlePickApps}
-          disabled={loading}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.btnLabel}>
-            {items.length > 0 ? "Change Selection" : "Pick Apps to Block"}
-          </Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Checklist */}
-      {items.length > 0 && (
-        <>
-          <Text style={styles.sectionHeader}>
-            Selected — {checkedCount}/{items.length} active
-          </Text>
-          <FlatList
-            data={items}
-            keyExtractor={(i) => i.id}
-            renderItem={renderRow}
-            style={styles.list}
-            contentContainerStyle={styles.listContent}
+      {/* Marshmallow + Hanger icon */}
+      <View style={styles.marshmallowSection}>
+        <View style={styles.marshmallowRow}>
+          <MarshmallowCharacter
+            color={state.color}
+            name={state.name}
+            sizeCm={state.sizeCm}
+            isBlocking={state.isBlocking}
           />
-        </>
-      )}
-
-      {/* Action buttons */}
-      {items.length > 0 && (
-        <View style={styles.actionRow}>
-          <TouchableOpacity
-            style={[
-              styles.btn,
-              styles.btnRed,
-              styles.flex1,
-              { marginRight: 6 },
-            ]}
-            onPress={handleApplyBlocking}
-            disabled={loading || checkedCount === 0}
-            activeOpacity={0.7}
+          <Pressable
+            style={({ pressed }) => [styles.hangerButton, pressed && styles.pressed]}
+            onPress={handleOpenCosmetics}
           >
-            <Text style={styles.btnLabel}>
-              Block Selected ({checkedCount})
+            <Ionicons name="shirt-outline" size={22} color={Theme.colors.secondary} />
+          </Pressable>
+        </View>
+      </View>
+
+      {/* Action Area (moved up) */}
+      <View style={styles.actionSection}>
+        {state.isBlocking ? (
+          <View style={styles.blockingCard}>
+            <View style={styles.blockingHeader}>
+              <View style={styles.blockingDot} />
+              <Text style={styles.blockingTitle}>Focus Session Active</Text>
+            </View>
+            <Text style={styles.timer}>
+              {formatTimeRemaining(timeRemaining)}
             </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.btn,
-              styles.btnGray,
-              styles.flex1,
-              { marginLeft: 6 },
+            <Text style={styles.blockingHint}>
+              Your marshmallow is growing{features.growth_rate > 1 ? " at 2x speed!" : "..."}
+            </Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.stopButton,
+                pressed && styles.pressed,
+              ]}
+              onPress={handleStopBlocking}
+            >
+              <Text style={styles.stopButtonText}>End Session</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            style={({ pressed }) => [
+              styles.startButton,
+              pressed && styles.pressed,
             ]}
-            onPress={handleClearBlocking}
-            disabled={loading}
-            activeOpacity={0.7}
+            onPress={handleStartBlocking}
           >
-            <Text style={styles.btnLabel}>Unblock All</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+            <Text style={styles.startButtonText}>Start Focus Session</Text>
+          </Pressable>
+        )}
+      </View>
 
-      {/* Spinner overlay */}
-      {loading && (
-        <View style={styles.overlay}>
-          <ActivityIndicator size="large" color="#007AFF" />
-        </View>
-      )}
+      {/* Cosmetics Bottom Sheet */}
+      <BottomSheetModal
+        ref={cosmeticSheetRef}
+        snapPoints={snapPoints}
+        enablePanDownToClose
+        enableDynamicSizing={false}
+        backdropComponent={renderBackdrop}
+        backgroundStyle={styles.sheetBackground}
+        handleIndicatorStyle={styles.handleIndicator}
+      >
+        <BottomSheetScrollView contentContainerStyle={styles.sheetContent}>
+          <Text style={styles.sheetTitle}>Customize</Text>
+          <Text style={styles.sheetSubtitle}>Choose a color for your marshmallow</Text>
+
+          {!isPremium && (
+            <Text style={styles.sheetLimit}>
+              {Math.max(0, 3 - state.colorChangesUsed)} free changes remaining
+            </Text>
+          )}
+
+          <View style={styles.colorGrid}>
+            {MARSHMALLOW_COLORS.map((c) => (
+              <Pressable
+                key={c.hex}
+                onPress={() => handleSelectColor(c.hex)}
+                style={styles.colorOption}
+              >
+                <View
+                  style={[
+                    styles.colorSwatch,
+                    { backgroundColor: c.hex },
+                    state.color === c.hex && styles.colorSelected,
+                  ]}
+                >
+                  {state.color === c.hex && (
+                    <Ionicons name="checkmark" size={20} color={Theme.colors.secondary} />
+                  )}
+                </View>
+                <Text style={styles.colorLabel}>{c.name}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {!isPremium && (
+            <Pressable
+              style={({ pressed }) => [styles.upgradeRow, pressed && styles.pressed]}
+              onPress={() => {
+                cosmeticSheetRef.current?.dismiss();
+                router.push("/premium");
+              }}
+            >
+              <Ionicons name="star" size={16} color={Theme.colors.secondary} />
+              <Text style={styles.upgradeText}>
+                Unlock rare colors & cosmetics with Premium
+              </Text>
+            </Pressable>
+          )}
+        </BottomSheetScrollView>
+      </BottomSheetModal>
     </View>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F2F2F7",
-    padding: 16,
+    backgroundColor: Theme.colors.background,
   },
-  centered: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 32,
-  },
-  title: { fontSize: 22, fontWeight: "700" },
-  subtitle: {
-    fontSize: 15,
-    color: "#8E8E93",
-    textAlign: "center",
-    marginTop: 8,
-  },
-
-  // Status
-  statusRow: {
+  // Top bar
+  topBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginBottom: 16,
-  },
-  statusLabel: { fontSize: 15, fontWeight: "600", color: "#3C3C43" },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  badgeGreen: { backgroundColor: "#34C759" },
-  badgeRed: { backgroundColor: "#FF3B30" },
-  badgeOrange: { backgroundColor: "#FF9500" },
-  badgePurple: { backgroundColor: "#AF52DE" },
-  badgeText: {
-    color: "#fff",
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-  },
-
-  // Buttons
-  btn: {
-    paddingVertical: 14,
+    justifyContent: "space-between",
     paddingHorizontal: 20,
-    borderRadius: 12,
-    alignItems: "center",
-    marginBottom: 12,
+    paddingVertical: 8,
   },
-  btnBlue: { backgroundColor: "#007AFF" },
-  btnIndigo: { backgroundColor: "#5856D6" },
-  btnRed: { backgroundColor: "#FF3B30" },
-  btnGray: { backgroundColor: "#8E8E93" },
-  btnLabel: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  flex1: { flex: 1 },
-
-  // Section header
-  sectionHeader: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#8E8E93",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 8,
+  streakBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(255, 149, 0, 0.1)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  streakText: {
+    fontSize: 16,
+    fontFamily: Theme.fonts.bold,
+    color: "#FF9500",
+  },
+  profileButton: {
+    padding: 4,
+  },
+  // Marshmallow area
+  marshmallowSection: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  marshmallowRow: {
+    alignItems: "center",
+  },
+  hangerButton: {
+    position: "absolute",
+    right: -48,
+    top: "40%",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Theme.colors.card,
+    borderWidth: 1,
+    borderColor: Theme.colors.cardBorder,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  // Size (above marshmallow)
+  sizeSection: {
+    alignItems: "center",
+    marginTop: 12,
+    marginBottom: 0,
+  },
+  sizeValue: {
+    fontSize: 36,
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.text,
+  },
+  sizeDesc: {
+    fontSize: 15,
+    fontFamily: Theme.fonts.regular,
+    color: Theme.colors.gray,
     marginTop: 4,
   },
-
-  // List
-  list: {
-    flex: 1,
-    borderRadius: 12,
-    backgroundColor: "#fff",
-    marginBottom: 12,
+  boostBadge: {
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: "rgba(139, 99, 92, 0.12)",
   },
-  listContent: { paddingBottom: 2 },
-  row: {
+  boostText: {
+    fontSize: 12,
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.secondary,
+  },
+  // Action area
+  actionSection: {
+    width: "100%",
+    paddingHorizontal: 28,
+    paddingBottom: 100,
+    marginTop: 0,
+  },
+  startButton: {
+    backgroundColor: Theme.colors.secondary,
+    paddingVertical: 18,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: Theme.colors.secondary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  startButtonText: {
+    color: Theme.colors.white,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 18,
+  },
+  blockingCard: {
+    backgroundColor: Theme.colors.card,
+    borderRadius: 16,
+    padding: 20,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: Theme.colors.cardBorder,
+  },
+  blockingHeader: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E5E5EA",
+    marginBottom: 8,
   },
-  typeIcon: { fontSize: 22, marginRight: 12 },
-  rowBody: { flex: 1 },
-  rowLabel: { fontSize: 16, fontWeight: "500", color: "#000" },
-  rowType: { fontSize: 12, color: "#8E8E93", marginTop: 2 },
-
-  // Actions
-  actionRow: { flexDirection: "row", marginBottom: 16 },
-
-  // Overlay
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.6)",
+  blockingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: Theme.colors.success,
+    marginRight: 8,
+  },
+  blockingTitle: {
+    fontSize: 16,
+    fontFamily: Theme.fonts.semibold,
+    color: Theme.colors.text,
+  },
+  timer: {
+    fontSize: 48,
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.text,
+    marginVertical: 4,
+  },
+  blockingHint: {
+    fontSize: 14,
+    fontFamily: Theme.fonts.regular,
+    color: Theme.colors.gray,
+    marginBottom: 14,
+  },
+  stopButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 24,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Theme.colors.danger,
+  },
+  stopButtonText: {
+    color: Theme.colors.danger,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 14,
+  },
+  pressed: {
+    opacity: 0.8,
+  },
+  // Bottom sheet
+  sheetBackground: {
+    backgroundColor: Theme.colors.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+  },
+  handleIndicator: {
+    width: 40,
+    backgroundColor: Theme.colors.gray,
+    opacity: 0.35,
+  },
+  sheetContent: {
+    paddingHorizontal: 24,
+    paddingTop: 8,
+    paddingBottom: 32,
+  },
+  sheetTitle: {
+    fontSize: 22,
+    fontFamily: Theme.fonts.bold,
+    color: Theme.colors.text,
+    textAlign: "center",
+  },
+  sheetSubtitle: {
+    fontSize: 14,
+    fontFamily: Theme.fonts.regular,
+    color: Theme.colors.gray,
+    textAlign: "center",
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  sheetLimit: {
+    fontSize: 13,
+    fontFamily: Theme.fonts.medium,
+    color: Theme.colors.gray,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  colorGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "center",
+    gap: 16,
+    paddingHorizontal: 8,
+  },
+  colorOption: {
     alignItems: "center",
+    width: 68,
+  },
+  colorSwatch: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "rgba(0,0,0,0.06)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  colorSelected: {
+    borderWidth: 3,
+    borderColor: Theme.colors.secondary,
+  },
+  colorLabel: {
+    marginTop: 6,
+    fontSize: 12,
+    fontFamily: Theme.fonts.medium,
+    color: Theme.colors.gray,
+  },
+  upgradeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: "rgba(139, 99, 92, 0.08)",
+  },
+  upgradeText: {
+    fontSize: 14,
+    fontFamily: Theme.fonts.semibold,
+    color: Theme.colors.secondary,
   },
 });
